@@ -1,0 +1,9 @@
+[workspace]
+members = [
+  "server/",
+  "client/",
+  "convos/",
+]
+
+[workspace.dependencies]
+convos = {path = "convos"}
