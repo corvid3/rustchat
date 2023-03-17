@@ -10,3 +10,8 @@ tokio = {version = "1.26.0", features = ["full"]}
 convos = { workspace = true }
 directories = "4.0.1"
 rand = "0.8.5"
+sqlx = {version = "*", features = ["runtime-tokio-rustls", "postgres"]}
+sha2 = "*"
+
+# dont need tihs for now
+# base64 = "*"

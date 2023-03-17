@@ -1,4 +1,6 @@
-use std::{io::Read, mem::transmute};
+use std::{fmt::Display, io::Read, mem::transmute};
+
+use serde::{Deserialize, Serialize};
 
 pub mod bytes {
   pub const OK: u8 = 0x00;
@@ -9,64 +11,105 @@ pub mod bytes {
   pub const SYNDICATION: u8 = 0xA0;
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Error {
+  NotLoggedIn,
+  AlreadyLoggedIn,
+
+  UsernameTaken,
+  InvalidUID,
+  InvalidUsername,
+  InvalidPassword,
+}
+
+impl Display for Error {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(match self {
+      Error::NotLoggedIn => "Not logged in",
+      Error::AlreadyLoggedIn => "Already logged in",
+      Error::UsernameTaken => "Username is taken",
+      Error::InvalidUID => "Invalid UID",
+      Error::InvalidUsername => "Invalid Username",
+      Error::InvalidPassword => "Invalid password",
+    })
+  }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Success {
+  SignIn,
+  SignUp,
+}
+
+impl Display for Success {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(match self {
+      Success::SignIn => "Successfully signed in",
+      Success::SignUp => "Successfully signed up",
+    })
+  }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ServerTell {
   NumConnected,
 
   // response to a WhoIs packet
   Who { id: u64, name: String },
   Syndication { from: u64, content: String },
+
+  Success(Success),
+  Error(Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ClientQuestion {
-  WhoIs { id: u64 },
+  SignUp { username: String, password: String },
+  SignIn { id: u64, password: String },
+  WhoIsID { id: u64 },
+  WhoIsName { name: String },
   WhoAmI,
 }
 
-pub fn decode_client_question(vec: Vec<u8>) -> Option<ClientQuestion> {
-  match vec[0] {
-    bytes::WHO_IS => {
-      let num = u64::from_be_bytes(vec[1..9].try_into().unwrap());
-      Some(ClientQuestion::WhoIs { id: num })
-    }
-
-    bytes::WHOAMI => Some(ClientQuestion::WhoAmI),
-
-    _ => {
-      dbg!("Ran into unknown type clarifier");
-      None
-    }
-  }
-}
-
 pub fn encode_client_question(question: ClientQuestion) -> Option<Vec<u8>> {
-  let vec: Vec<u8> = match question {
-    ClientQuestion::WhoIs { id } => {
-      let mut vec = vec![bytes::WHO_IS];
-      vec.extend_from_slice(&id.to_be_bytes());
-      vec
-    }
+  let str = serde_json::to_string(&question).ok()?;
+  dbg!(str);
 
-    ClientQuestion::WhoAmI => vec![bytes::WHOAMI],
-  };
+  let mut json = serde_json::to_vec(&question).ok()?;
+  let len = json.len();
 
-  let vec_size = vec.len();
-  if vec_size > u16::MAX as usize {
+  if len > u16::MAX as usize {
     return None;
   }
 
-  let mut vec2 = Vec::new();
-  vec2.extend_from_slice(&(vec_size as u16).to_be_bytes());
-  vec2.extend(vec);
-  Some(vec2)
+  let mut vec = vec![];
+  vec.extend_from_slice(&(len as u16).to_be_bytes());
+  vec.append(&mut json);
+
+  Some(vec)
 }
 
-impl ServerTell {
-  // decodes a stream of bytes into a usable tell
-  fn decode<T>(input: T)
-  where
-    T: IntoIterator<Item = u8>,
-  {
-    let x = input.into_iter();
+pub fn decode_client_question(vec: Vec<u8>) -> Option<ClientQuestion> {
+  let cli = serde_json::from_slice(vec.as_slice()).ok()?;
+  Some(cli)
+}
+
+pub fn encode_server_question(question: ServerTell) -> Option<Vec<u8>> {
+  let mut json = serde_json::to_vec(&question).ok()?;
+  let len = json.len();
+
+  if len > u16::MAX as usize {
+    return None;
   }
+
+  let mut vec = vec![];
+  vec.extend_from_slice(&(len as u16).to_be_bytes());
+  vec.append(&mut json);
+
+  Some(vec)
+}
+
+pub fn decode_server_question(vec: Vec<u8>) -> Option<ServerTell> {
+  let cli = serde_json::from_slice(vec.as_slice()).ok()?;
+  Some(cli)
 }

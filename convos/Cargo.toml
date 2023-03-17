@@ -6,5 +6,7 @@ edition = "2021"
 [lib]
 
 [dependencies]
+serde = "*"
+serde_json = "*"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -1,4 +1,4 @@
-use convos::{encode_client_question, ClientQuestion};
+use convos::{decode_server_question, encode_client_question, ClientQuestion};
 use tokio::{
   io::{AsyncReadExt, AsyncWriteExt},
   net::{
@@ -32,12 +32,17 @@ pub struct Broker {
 
 /// user->broker command
 pub enum Command {
-  Ping,
-  WhoAmI,
   Connect(String),
   Disconnect,
+
+  SignUp { name: String, password: String },
+  SignIn { name: String, password: String },
+
+  Ping,
+  WhoAmI,
+
   Message(String),
-  SetId(u64),
+
   Unknown,
   Error(String),
 }
@@ -77,16 +82,35 @@ mod command_parsing {
 
           Command::Connect(lex.slice().to_owned())
         }
-        "setid" => {
+        "signin" => {
           if lex.next().is_none() {
-            return Command::Error("Expected an id after /setid".to_owned());
+            return Command::Error("expected a username after signin command".to_owned());
           }
 
-          let Ok(id) = str::parse::<u64>(lex.slice()) else {
-            return Command::Error("Not a u64 after /setid".to_owned());
-          };
+          let name = lex.slice().to_owned();
 
-          Command::SetId(id)
+          if lex.next().is_none() {
+            return Command::Error("expected a password after signin command".to_owned());
+          }
+
+          let password = lex.slice().to_owned();
+
+          Command::SignIn { name, password }
+        }
+        "signup" => {
+          if lex.next().is_none() {
+            return Command::Error("expected a username after signup command".to_owned());
+          }
+
+          let name = lex.slice().to_owned();
+
+          if lex.next().is_none() {
+            return Command::Error("expected a password after signup command".to_owned());
+          }
+
+          let password = lex.slice().to_owned();
+
+          Command::SignUp { name, password }
         }
         "disconnect" => Command::Disconnect,
         _ => Command::Unknown,
@@ -144,7 +168,28 @@ impl Broker {
     self.workers = None;
   }
 
-  async fn handle_incoming_from_server(&mut self, msg: Vec<u8>) {}
+  async fn handle_incoming_from_server(&mut self, msg: Vec<u8>) {
+    let tell = decode_server_question(msg).unwrap();
+
+    match tell {
+      convos::ServerTell::NumConnected => todo!(),
+      convos::ServerTell::Who { id, name } => {
+        self
+          .to_handle
+          .send(format!("Whois id: {} name: {}", id, name))
+          .await
+          .unwrap();
+      }
+      convos::ServerTell::Syndication { from, content } => todo!(),
+      convos::ServerTell::Success(s) => self
+        .to_handle
+        .send(format!("Success: {}", s))
+        .await
+        .unwrap(),
+      convos::ServerTell::Error(x) => self.to_handle.send(format!("Error: {}", x)).await.unwrap(),
+    }
+  }
+
   async fn handle_incoming_from_user(&mut self, msg: String) {
     let cmd = command_parsing::parse(msg);
 
@@ -164,8 +209,6 @@ impl Broker {
         // give the handshake to the server
         let hs = stream.read_u64().await.unwrap();
         stream.write_u64(hs).await.unwrap();
-
-        stream.write_u64(self.my_id).await.unwrap();
 
         let (read_half, write_half) = stream.into_split();
 
@@ -206,19 +249,6 @@ impl Broker {
         self.to_handle.send("Sent whoami".to_owned()).await.unwrap();
       }
 
-      Command::SetId(id) => {
-        if self.workers.is_some() {
-          self
-            .to_handle
-            .send("Cannot change ID while connected to a server.".to_owned())
-            .await
-            .unwrap();
-          return;
-        }
-
-        self.my_id = id;
-      }
-
       Command::Disconnect => {
         if self.workers.is_none() {
           self
@@ -253,6 +283,29 @@ impl Broker {
         }
       }
 
+      Command::SignUp { name, password } => {
+        let Some(workers) = &self.workers else {
+          self
+            .to_handle
+            .send("No server currently connected to send a message to".to_owned()).await.unwrap();
+          return;
+        };
+
+        workers
+          .to_server
+          .send(
+            encode_client_question(ClientQuestion::SignUp {
+              username: name,
+              password,
+            })
+            .unwrap(),
+          )
+          .await
+          .unwrap();
+      }
+
+      Command::SignIn { name, password } => todo!(),
+
       Command::Unknown => self
         .to_handle
         .send("Unknown command".to_string())
@@ -282,11 +335,17 @@ async fn writer(
 
 async fn reader(
   mut kill: watch::Receiver<()>,
-  stream: OwnedReadHalf,
+  mut stream: OwnedReadHalf,
   to_broker: mpsc::Sender<Vec<u8>>,
 ) {
   loop {
     select! {
+      _ = async {
+        let len = stream.read_u16().await.unwrap();
+        let mut vec = vec![0; len as usize];
+        stream.read_exact(vec.as_mut_slice()).await.unwrap();
+        to_broker.send(vec).await.unwrap();
+      } => {},
       _ = kill.changed() => return,
     }
   }
